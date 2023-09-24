@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 import time, skimage
 from utils import N_to_reso, N_to_vm_reso
+from .stupid_sample import Fgraid_sample
 
 
 # import BasisCoding
@@ -102,7 +103,7 @@ class AlphaGridMask(torch.nn.Module):
 
     def sample_alpha(self, xyz_sampled):
         xyz_sampled = self.normalize_coord(xyz_sampled)
-        alpha_vals = F.grid_sample(self.alpha_volume, xyz_sampled.view(1, -1, 1, 1, 3), align_corners=True).view(-1)
+        alpha_vals = Fgraid_sample(self.alpha_volume, xyz_sampled.view(1, -1, 1, 1, 3), align_corners=True).view(-1)
 
         return alpha_vals
 
@@ -430,23 +431,23 @@ class FactorFields(torch.nn.Module):
         if self.coeff_type in 'hash':
             coeffs = self.coeffs(pts * 0.5 + 0.5).float()
         elif 'grid' in self.coeff_type:
-            coeffs = F.grid_sample(self.coeffs[self.scene_idx], pts, mode=self.cfg.model.coef_mode, align_corners=False,
+            coeffs = Fgraid_sample(self.coeffs[self.scene_idx], pts, mode=self.cfg.model.coef_mode, align_corners=False,
                                    padding_mode='border').view(-1, N_points).t()
         elif 'vec' in self.coeff_type:
             pts = pts.view(1, -1, 1, in_dim)
             idx = (self.scene_idx + 0.5) / self.n_scene * 2 - 1
             pts = torch.stack((torch.ones_like(pts[..., 0]) * idx, pts[..., 0]), dim=-1)
-            coeffs = F.grid_sample(self.coeffs[0], pts, mode=self.cfg.model.coef_mode,
+            coeffs = Fgraid_sample(self.coeffs[0], pts, mode=self.cfg.model.coef_mode,
                                    align_corners=False, padding_mode='border').view(-1, N_points).t()
         elif 'cp' in self.coeff_type:
             pts = pts.squeeze(2)
             idx = (self.scene_idx + 0.5) / self.n_scene * 2 - 1
             pts = torch.stack((torch.ones_like(pts) * idx, pts), dim=-2)
 
-            coeffs = F.grid_sample(self.coeffs[0], pts[..., 0], mode=self.cfg.model.coef_mode,
+            coeffs = Fgraid_sample(self.coeffs[0], pts[..., 0], mode=self.cfg.model.coef_mode,
                                    align_corners=False, padding_mode='border').view(-1, N_points).t()
             for i in range(1, in_dim):
-                coeffs = coeffs * F.grid_sample(self.coeffs[i], pts[..., i], mode=self.cfg.model.coef_mode,
+                coeffs = coeffs * Fgraid_sample(self.coeffs[i], pts[..., i], mode=self.cfg.model.coef_mode,
                                                 align_corners=False, padding_mode='border').view(-1, N_points).t()
         elif 'vm' in self.coeff_type:
             pts = pts.squeeze(2)
@@ -455,7 +456,7 @@ class FactorFields(torch.nn.Module):
 
             coeffs = []
             for i in range(in_dim):
-                coeffs.append(F.grid_sample(self.coeffs[i], pts[..., self.vecMode[i]], mode=self.cfg.model.coef_mode,
+                coeffs.append(Fgraid_sample(self.coeffs[i], pts[..., self.vecMode[i]], mode=self.cfg.model.coef_mode,
                                             align_corners=False, padding_mode='border').view(-1, N_points).t())
             coeffs = torch.cat(coeffs, dim=-1)
         elif 'mlp' in self.coeff_type:
@@ -486,24 +487,24 @@ class FactorFields(torch.nn.Module):
                     basises.append(self.basises[i](xyz[..., i].view(-1, self.in_dim)))
                 elif 'grid' in self.basis_type:
                     basises.append(
-                        F.grid_sample(self.basises[i], xyz[..., i], mode=self.cfg.model.basis_mode,
+                        Fgraid_sample(self.basises[i], xyz[..., i], mode=self.cfg.model.basis_mode,
                                       align_corners=True).view(-1, N_points).T)
                 elif 'vm' in self.basis_type:
                     coordinate_mat = torch.stack((xyz[..., self.matMode[0], i], xyz[..., self.matMode[1], i],
                                                   xyz[..., self.matMode[2], i])).view(3, -1, 1, 2)
                     for idx_mat in range(self.in_dim):
-                        basises.append(F.grid_sample(self.basises[i * self.in_dim + idx_mat], coordinate_mat[[idx_mat]],
+                        basises.append(Fgraid_sample(self.basises[i * self.in_dim + idx_mat], coordinate_mat[[idx_mat]],
                                                      align_corners=True).view(-1, x.shape[0]).t())
                 elif 'cp' in self.basis_type:
                     for idx_axis in range(self.in_dim - 1):
                         coordinate_vec = torch.stack(
                             (torch.zeros_like(xyz[..., idx_axis + 1, i]), xyz[..., idx_axis + 1, i]), dim=-1).squeeze(2)
                         if 0 == idx_axis:
-                            basises_level = F.grid_sample(self.basises[i * (self.in_dim - 1) + idx_axis],
+                            basises_level = Fgraid_sample(self.basises[i * (self.in_dim - 1) + idx_axis],
                                                           coordinate_vec,
                                                           align_corners=True).view(-1, x.shape[0]).t()
                         else:
-                            basises_level = basises_level * F.grid_sample(
+                            basises_level = basises_level * Fgraid_sample(
                                 self.basises[i * (self.in_dim - 1) + idx_axis], coordinate_vec,
                                 align_corners=True).view(-1, x.shape[0]).t()
                     basises.append(basises_level)
