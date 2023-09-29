@@ -35,8 +35,8 @@ class SplatGaussian2D(torch.nn.Module):
         # 4) angle, 1
         # in total 8 params
 
-        # [0, 1], need sigmoid
-        rgb_raw = torch.zeros(n_gaussain_num, 3, dtype=torch.float32)
+        # [0, 1], need clip
+        rgb_raw = torch.rand(n_gaussain_num, 3, dtype=torch.float32)
 
         # [-1.1, 1.1],, need tanh, assume image region is [-1, 1]
         mu_raw = torch.rand(n_gaussain_num, 2, dtype=torch.float32) * 2 - 1
@@ -95,6 +95,20 @@ class SplatGaussian2D(torch.nn.Module):
         vec_mu_x_bxnx2 = xnorm_bx2.unsqueeze(1) - mu_nx2.unsqueeze(0)
         vec_mu_x_bxnx2x1 = vec_mu_x_bxnx2.unsqueeze(-1)
         vec_mu_x_bxnx2x1 = vec_mu_x_bxnx2x1 / 2 * wh_2.reshape(1, 1, 2, 1)
+
+        # second, comppute distance
+        S_nx2 = torch.sigmoid(self.scale) # [0,1]
+        S_nx2 = S_nx2 * (self.s_max - self.s_min) + self.s_min # [s_min, s_max]
+        S_bxnx2x1 = S_nx2.reshape(1, -1, 2, 1).expand(b, -1, -1, -1)
+
+        # rotation will not change distance
+        # can be acced by cuda
+        vec_scald_bxnx2x1 = vec_mu_x_bxnx2x1 * S_bxnx2x1
+        distacce_bxnx1 = vec_scald_bxnx2x1.norm(dim=-2)
+
+        # 
+        valid_bxnx1 = distacce_bxnx1 < 5
+
         
         # second, compute the distance
         # y = A *exp ( x' R' S' S R x )
@@ -114,7 +128,7 @@ class SplatGaussian2D(torch.nn.Module):
         distance2_bxnx1x1 = distance1_bxnx2x1.permute(0, 1, 3, 2) @ distance1_bxnx2x1
 
         # thierd, compute the values
-        rgb_nx3 = torch.sigmoid(self.rgb)
+        rgb_nx3 = torch.clip(self.rgb, 0, 1)
         rgb_bxnx3 = rgb_nx3.unsqueeze(0).expand(b, -1, -1)
 
         values_bxnx3 = rgb_bxnx3 * torch.exp(-distance2_bxnx1x1.squeeze(-1))

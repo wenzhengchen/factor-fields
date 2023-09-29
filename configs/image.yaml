@@ -37,14 +37,14 @@ dataset:
   # loader options
   dataset_name: image
   # datadir: "../data/image/albert.exr"
-  datadir: "../data/image//pluto.jpeg"
+  datadir: "/media/wz/Code/images/images/pluto.jpeg"
   # datadir: "../data/image//Girl_with_a_Pearl_Earring.jpeg"
   # datadir: "../data/image//Weissenbruch_Jan_Hendrik_The_Shipping_Canal_at_Rijswijk.jpeg"
 
 
 training:
   n_iters: 10000
-  batch_size: 1024
+  batch_size: 512
 
   # learning rate
   lr_small: 0.002

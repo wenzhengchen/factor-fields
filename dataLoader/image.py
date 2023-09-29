@@ -24,14 +24,14 @@ def srgb_to_linear(img):
 	return np.where(img > limit, np.power((img + 0.055) / 1.055, 2.4), img / 12.92)
 
 class ImageDataset(Dataset):
-    def __init__(self, cfg, batchsize, split='train', continue_sampling=False, tolinear=False, HW=-1, perscent=1.0, delete_region=None,mask=None):
+    def __init__(self, cfg, batchsize, split='train', continue_sampling=False, tolinear=False, HW=None, perscent=1.0, delete_region=None,mask=None):
 
         datadir = cfg.datadir
         self.batchsize = batchsize
         self.continue_sampling = continue_sampling
         img = load(datadir).astype(np.float32)
-        if HW>0:
-            img = cv2.resize(img,[HW,HW])
+        if HW is not None:
+            img = cv2.resize(img,HW[::-1], cv2.INTER_AREA)
             
         if tolinear:
             img = srgb_to_linear(img)

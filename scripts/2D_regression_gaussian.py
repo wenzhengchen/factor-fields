@@ -58,11 +58,13 @@ base_conf = OmegaConf.load('../configs/defaults.yaml')
 second_conf = OmegaConf.load('../configs/image.yaml')
 cfg = OmegaConf.merge(base_conf, second_conf)
 
-device = torch.device('mps')
+device = torch.device('cuda')
+
+HW = [100, 100]
 
 dataset = dataset_dict[cfg.dataset.dataset_name]
 tolinear = False if cfg.dataset.datadir.endswith('exr') else True
-train_dataset = dataset(cfg.dataset, cfg.training.batch_size, split='train', tolinear=tolinear)
+train_dataset = dataset(cfg.dataset, cfg.training.batch_size, split='train', tolinear=tolinear, HW=HW)
 train_loader = DataLoader(train_dataset,
               num_workers=0,
               persistent_workers=False,
@@ -77,14 +79,15 @@ H,W = train_dataset.HW
 cfg.dataset.aabb = train_dataset.scene_bbox
 
 # %%
-from models.gausssian2d import SplatGaussian2D
-h, w = 8000, 8000
-model = SplatGaussian2D(n_gaussain_num=256, n_gaussian_max_pixels=4000, n_gaussian_min_pixels=10, h=h, w=w)
+from models.gausssian2d_3_sh import SplatGaussian2D
+import cv2
+h, w = HW
+model = SplatGaussian2D(n_gaussain_num=3000, n_gaussian_max_pixels=50, n_gaussian_min_pixels=0.5, h=h, w=w)
 model.to(device)
 print(model)
 print('total parameters: ',model.n_parameters())
 
-grad_vars = model.get_optparam_groups(lr_small=cfg.training.lr_small)
+grad_vars = model.get_optparam_groups(lr_small=0.01)
 grad_vars
 optimizer = torch.optim.Adam(grad_vars, betas=(0.9, 0.99))#
 
@@ -94,6 +97,8 @@ loss_scale = 1.0
 lr_factor = 0.1 ** (1 / n_iter)
 pbar = tqdm(range(n_iter))
 start = time.time()
+
+iter_show = 500
 for (iteration, sample) in zip(pbar,train_loader):
     loss_scale *= lr_factor
 
@@ -104,6 +109,32 @@ for (iteration, sample) in zip(pbar,train_loader):
     y_recon = model(coordiantes_device)
     
     loss = torch.mean((y_recon-pixel_rgb.to(device))**2) 
+
+    if iteration % iter_show == 0:
+        model.s_max = model.s_max * 0.95
+        with torch.no_grad():
+            coords_show = train_dataset.coordiante
+            coords_show = coords_show.to(device)
+            coord_batchmax = 100000
+            coord_step = (coords_show.shape[0] + coord_batchmax - 1) // coord_batchmax
+            recons = []
+            for j in range(coord_step):
+                coord_be = j * coord_batchmax
+                coord_en = min(coord_be + coord_batchmax, coords_show.shape[0])
+                if coord_en <= coord_be:
+                    continue
+                recons.append(model(coords_show[coord_be:coord_en]))
+
+            recons = torch.cat(recons, dim=0)
+            reconsnp = recons.detach().cpu().numpy()
+            reconsnp = reconsnp.reshape(HW[0], HW[1], 3)
+            reconsnp = cv2.resize(reconsnp, (800, 800))
+            gtnp = train_dataset.img.detach().cpu().numpy()
+            gtnp = gtnp.reshape(HW[0], HW[1], 3)
+            gtnp = cv2.resize(gtnp, (800, 800))
+            cv2.imshow("1", reconsnp[:, :, ::-1])
+            cv2.imshow("2", gtnp[:, :, ::-1])
+            cv2.waitKey(1)
     
     
     psnr = -10.0 * np.log(loss.item()) / np.log(10.0)
