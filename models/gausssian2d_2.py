@@ -70,6 +70,12 @@ class SplatGaussian2D(torch.nn.Module):
         # indexing all gaussians
         pass
 
+    def reset(self,):
+        bad_gaussian = self.opacity < 0.005
+        ratio = bad_gaussian.mean().detach().cpu().numpy()
+        print('%.5f percent of agussian has 0.005 opacity'%ratio)
+        pass
+
     def n_parameters(self):
         total = sum(p.numel() for p in self.parameters())
         return total

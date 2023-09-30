@@ -65,7 +65,7 @@ class SplatGaussian2D(torch.nn.Module):
         # [0, 1], need clip
         self.num_sh = n_sh
         rgb_raw = torch.rand(n_gaussain_num, 2 * n_sh + 1, 3, dtype=torch.float32)
-        opacity_raw = torch.rand(n_gaussain_num, dtype=torch.float32)
+        opacity_raw = 0.1 + 0.9 * torch.rand(n_gaussain_num, dtype=torch.float32)
 
         # [-1.1, 1.1],, need clip, assume image region is [-1, 1]
         mu_raw = torch.rand(n_gaussain_num, 2, dtype=torch.float32) * 2 - 1
@@ -76,8 +76,8 @@ class SplatGaussian2D(torch.nn.Module):
         # [0, 1] and rescale to [s_min, s_max], need clip
         scale_raw = torch.rand(n_gaussain_num, 2, dtype=torch.float32) 
 
-        # [-1, 1] and rescale to [-pi, pi]
-        angle_raw = torch.rand(n_gaussain_num, dtype=torch.float32) * 2 - 1 # [-pi, pi]
+        # [0, 1] and rescale to [0, 2 * pi]
+        angle_raw = torch.rand(n_gaussain_num, dtype=torch.float32)
 
         self.h = h
         self.w = w
@@ -94,6 +94,12 @@ class SplatGaussian2D(torch.nn.Module):
 
     def indexing(self,):
         # indexing all gaussians
+        pass
+
+    def reset(self,):
+        bad_gaussian = self.opacity < 0.005
+        ratio = bad_gaussian.float().mean().detach().cpu().numpy()
+        print('%.5f percent of agussian has 0.005 opacity'%ratio)
         pass
 
     def n_parameters(self):
@@ -122,11 +128,14 @@ class SplatGaussian2D(torch.nn.Module):
         xnorm_bx2 = xnorm_bx2 * 2 - 1
 
         # learned gaussians
-        gaussian_mu_nx2 = torch.tanh(self.mu) # [-1, 1]
+        gaussian_mu_nx2 = torch.clip(self.mu, -1, 1) # [-1, 1]
         gaussian_mu_nx2 = gaussian_mu_nx2 * self.mu_border # [-border, border], e.g. [-1.1, 1.1]
 
         S_nx2 = torch.clip(self.scale, 0, 1) # [0,1]
         S_nx2 = S_nx2 * (self.s_max - self.s_min) + self.s_min # [s_min, s_max]
+
+        angle_n = torch.remainder(self.angle, 1.0) # 0-1
+        angle_n = angle_n * 2 * np.pi
 
         # comppute distance
         # can be acced by cuda
@@ -138,7 +147,12 @@ class SplatGaussian2D(torch.nn.Module):
 
             # rotation will not change distance
             S_bxnx2x1 = S_nx2.reshape(1, -1, 2, 1).expand(b, -1, -1, -1)
-            vec_scald_bxnx2x1 = vec_mu_x_bxnx2x1 * S_bxnx2x1
+            
+            angle_bxn = angle_n.unsqueeze(0).expand(b, -1)
+            R_bxnx2x2 = _build_rotate_mtx(angle_bxn)
+
+            vec_rotate_bxnx2x1 = R_bxnx2x2 @ vec_mu_x_bxnx2x1
+            vec_scald_bxnx2x1 = vec_rotate_bxnx2x1 * S_bxnx2x1
             distacce_bxnx1 = vec_scald_bxnx2x1.norm(dim=-2)
 
             # we only care about close gaussian
@@ -161,19 +175,13 @@ class SplatGaussian2D(torch.nn.Module):
 
         # compute the value
         # y = A *exp ( x' R' S' S R x )
-        alpha_n = torch.tanh(self.angle) * 3.1416 # [-pi, pi]
-        alpha_k = alpha_n[idx_gaussian_k]
-        R_kx2x2 = _build_rotate_mtx(alpha_k)
-
+        angle_k = angle_n[idx_gaussian_k]
+        R_kx2x2 = _build_rotate_mtx(angle_k)
         S_kx2 = S_nx2[idx_gaussian_k]
-        Sx_kx1, Sy_kx1 = torch.split(S_kx2, [1, 1], dim=-1)
-        S0_kx1 = torch.zeros_like(Sx_kx1)
-        S_kx4 = torch.cat([Sx_kx1, S0_kx1, S0_kx1, Sy_kx1], dim=-1)
-        S_kx2x2 = S_kx4.reshape(-1, 2, 2)
 
-        # bug, it should be first rotate, then scale???
-        distance1_kx2x1 =  R_kx2x2 @ S_kx2x2 @ vec_mu_x_kx2x1
-        distance2_kx1x1 = distance1_kx2x1.permute(0, 2, 1) @ distance1_kx2x1
+        vec_rotate =   R_kx2x2 @ vec_mu_x_kx2x1
+        vec_scale_kx2x1 = S_kx2.unsqueeze(-1) * vec_rotate
+        distance2_kx1x1 = vec_scale_kx2x1.permute(0, 2, 1) @ vec_scale_kx2x1
 
         # thierd, compute the values
         vec_mu_x_norm_kx2 = vec_mu_x_kx2 / (1e-10 + vec_mu_x_kx2.norm(dim=-1, keepdim=True))
@@ -184,7 +192,7 @@ class SplatGaussian2D(torch.nn.Module):
         rgb_kx3 = _sh2d(angle_k, self.rgbsh[idx_gaussian_k], self.num_sh)
         rgb_kx3 = torch.sigmoid(rgb_kx3)
 
-        opacity_k = torch.sigmoid(self.opacity[idx_gaussian_k])
+        opacity_k = torch.clip(self.opacity[idx_gaussian_k], 0, 1)
         weights_k = torch.exp(-distance2_kx1x1.reshape(-1,))
 
         values_bx3 = accumulate_along_rays(weights=weights_k * opacity_k, 

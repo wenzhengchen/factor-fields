@@ -87,7 +87,7 @@ model.to(device)
 print(model)
 print('total parameters: ',model.n_parameters())
 
-grad_vars = model.get_optparam_groups(lr_small=0.01)
+grad_vars = model.get_optparam_groups(lr_small=0.001)
 grad_vars
 optimizer = torch.optim.Adam(grad_vars, betas=(0.9, 0.99))#
 
@@ -99,6 +99,7 @@ pbar = tqdm(range(n_iter))
 start = time.time()
 
 iter_show = 500
+iter_gaussian_remove = 500
 for (iteration, sample) in zip(pbar,train_loader):
     loss_scale *= lr_factor
 
@@ -109,6 +110,9 @@ for (iteration, sample) in zip(pbar,train_loader):
     y_recon = model(coordiantes_device)
     
     loss = torch.mean((y_recon-pixel_rgb.to(device))**2) 
+
+    if iteration % iter_gaussian_remove == 0:
+        model.reset()
 
     if iteration % iter_show == 0:
         model.s_max = model.s_max * 0.95
