@@ -44,7 +44,7 @@ dataset:
 
 training:
   n_iters: 10000
-  batch_size: 512
+  batch_size: 2048
 
   # learning rate
   lr_small: 0.002

@@ -106,10 +106,6 @@ class SplatGaussian2D(torch.nn.Module):
         vec_scald_bxnx2x1 = vec_mu_x_bxnx2x1 * S_bxnx2x1
         distacce_bxnx1 = vec_scald_bxnx2x1.norm(dim=-2)
 
-        # 
-        valid_bxnx1 = distacce_bxnx1 < 5
-
-        
         # second, compute the distance
         # y = A *exp ( x' R' S' S R x )
         alpha_n = torch.tanh(self.angle) * 3.1416 # [-pi, pi]

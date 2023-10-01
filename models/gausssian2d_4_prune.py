@@ -61,49 +61,105 @@ class SplatGaussian2D(torch.nn.Module):
         # in total 8 params
 
         self.num_gaussain = n_gaussain_num
-
-        # [0, 1], need clip
         self.num_sh = n_sh
-        rgb_raw = torch.rand(n_gaussain_num, 2 * n_sh + 1, 3, dtype=torch.float32)
-        opacity_raw = 0.1 + 0.9 * torch.rand(n_gaussain_num, dtype=torch.float32)
-
-        # [-1.1, 1.1],, need clip, assume image region is [-1, 1]
-        mu_raw = torch.rand(n_gaussain_num, 2, dtype=torch.float32) * 2 - 1
-        mu_border = 1.05
-
-        s_min = 1 / n_gaussian_max_pixels
-        s_max = 1 / n_gaussian_min_pixels
-        # [0, 1] and rescale to [s_min, s_max], need clip
-        scale_raw = torch.rand(n_gaussain_num, 2, dtype=torch.float32) 
-
-        # [0, 1] and rescale to [0, 2 * pi]
-        angle_raw = torch.rand(n_gaussain_num, dtype=torch.float32)
 
         self.h = h
         self.w = w
-        self.mu_border = mu_border
 
-        self.register_parameter('opacity', torch.nn.Parameter(opacity_raw))
-        self.register_parameter('rgbsh', torch.nn.Parameter(rgb_raw))
-        self.register_parameter('mu', torch.nn.Parameter(mu_raw))
+        self.mu_border = 1.05
+
+        s_min = 1 / n_gaussian_max_pixels
+        s_max = 1 / n_gaussian_min_pixels
 
         self.s_min = s_min
         self.s_max = s_max
-        self.register_parameter('scale', torch.nn.Parameter(scale_raw))
-        self.register_parameter('angle', torch.nn.Parameter(angle_raw))
+
+        # [-border, border],, need clip, assume image region is [-1, 1], border is 1.05
+        mu_raw = torch.rand(n_gaussain_num, 2, dtype=torch.float32) * 2 - 1
+        self.register_parameter('_xyz', torch.nn.Parameter(mu_raw))
+
+        rgb_raw = torch.rand(n_gaussain_num, 2 * n_sh + 1, 3, dtype=torch.float32)
+        self.register_parameter('_features', torch.nn.Parameter(rgb_raw))
+
+        # [0, 1], need clip
+        opacity_raw = 0.1 + 0.9 * torch.rand(n_gaussain_num, dtype=torch.float32)
+        self.register_parameter('_opacity', torch.nn.Parameter(opacity_raw))
+
+        # [0, 1] and rescale to [s_min, s_max], need clip
+        scale_raw = torch.rand(n_gaussain_num, 2, dtype=torch.float32) 
+        self.register_parameter('_scaling', torch.nn.Parameter(scale_raw))
+
+        # [0, 1] and rescale to [0, 2 * pi]
+        angle_raw = torch.rand(n_gaussain_num, dtype=torch.float32)
+        self.register_parameter('_rotation', torch.nn.Parameter(angle_raw))
 
     def indexing(self,):
         # indexing all gaussians
         pass
 
-    def reset(self,):
-        bad_gaussian = self.opacity < 0.005
-        ratio = bad_gaussian.float().mean().detach().cpu().numpy()
-        print('%.5f percent of agussian has 0.005 opacity'%ratio)
+    @property
+    def get_xyz(self):
+        return self._xyz
+    
+    def training_setup(self, lr):
 
-        large_gaussian = self.scale > 0.5
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+
+        l = [
+            {'params': [self._xyz], 'lr': lr, "name": "xyz"},
+            {'params': [self._features], 'lr': lr, "name": "features"},
+            {'params': [self._opacity], 'lr': lr, "name": "opacity"},
+            {'params': [self._scaling], 'lr': lr, "name": "scaling"},
+            {'params': [self._rotation], 'lr': lr, "name": "rotation"}
+        ]
+
+        return l
+
+    def _prune_optimizer(self, mask, optimizer):
+        optimizable_tensors = {}
+        for group in optimizer.param_groups:
+            stored_state = optimizer.state.get(group['params'][0], None)
+            if stored_state is not None:
+                stored_state["exp_avg"] = stored_state["exp_avg"][mask]
+                stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][mask]
+
+                del optimizer.state[group['params'][0]]
+                group["params"][0] = torch.nn.Parameter((group["params"][0][mask].requires_grad_(True)))
+                optimizer.state[group['params'][0]] = stored_state
+
+                optimizable_tensors[group["name"]] = group["params"][0]
+            else:
+                group["params"][0] = torch.nn.Parameter(group["params"][0][mask].requires_grad_(True))
+                optimizable_tensors[group["name"]] = group["params"][0]
+        return optimizer, optimizable_tensors
+
+    def prune_points(self, optimizer):
+        mask = self._opacity < 0.001
+        valid_points_mask = ~mask
+        optimizer, optimizable_tensors = self._prune_optimizer(valid_points_mask, optimizer)
+
+        self._xyz = optimizable_tensors["xyz"]
+        self._features = optimizable_tensors["features"]
+        self._opacity = optimizable_tensors["opacity"]
+        self._scaling = optimizable_tensors["scaling"]
+        self._rotation = optimizable_tensors["rotation"]
+
+        self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
+        self.denom = self.denom[valid_points_mask]
+
+        self.num_gaussain = valid_points_mask.sum()
+
+        return optimizer
+
+    def reset(self,):
+        bad_gaussian = self._opacity < 0.001
+        ratio = bad_gaussian.float().mean().detach().cpu().numpy()
+        print('%.5f percent of %d agussian has 0.005 opacity'%(ratio, self._opacity.shape[0]))
+
+        large_gaussian = self._scaling > 0.5
         ratio = large_gaussian.float().mean().detach().cpu().numpy()
-        print('%.5f percent of agussian has larger scale'%ratio)
+        print('%.5f percent of %d agussian has larger scale'%(ratio, self._opacity.shape[0]))
         pass
 
     def n_parameters(self):
@@ -132,13 +188,13 @@ class SplatGaussian2D(torch.nn.Module):
         xnorm_bx2 = xnorm_bx2 * 2 - 1
 
         # learned gaussians
-        gaussian_mu_nx2 = torch.clip(self.mu, -1, 1) # [-1, 1]
+        gaussian_mu_nx2 = torch.clip(self._xyz, -1, 1) # [-1, 1]
         gaussian_mu_nx2 = gaussian_mu_nx2 * self.mu_border # [-border, border], e.g. [-1.1, 1.1]
 
-        S_nx2 = torch.clip(self.scale, 0, 1) # [0,1]
+        S_nx2 = torch.clip(self._scaling, 0, 1) # [0,1]
         S_nx2 = S_nx2 * (self.s_max - self.s_min) + self.s_min # [s_min, s_max]
 
-        angle_n = torch.remainder(self.angle, 1.0) # 0-1
+        angle_n = torch.remainder(self._rotation, 1.0) # 0-1
         angle_n = angle_n * 2 * np.pi
 
         # comppute distance
@@ -193,10 +249,10 @@ class SplatGaussian2D(torch.nn.Module):
         vec_mu_x_rot_kx2 = vec_mu_x_rot_kx2x1.squeeze(-1)
 
         angle_k = torch.atan2(vec_mu_x_rot_kx2[:, 0], vec_mu_x_rot_kx2[:, 1])
-        rgb_kx3 = _sh2d(angle_k, self.rgbsh[idx_gaussian_k], self.num_sh)
+        rgb_kx3 = _sh2d(angle_k, self._features[idx_gaussian_k], self.num_sh)
         rgb_kx3 = torch.sigmoid(rgb_kx3)
 
-        opacity_k = torch.clip(self.opacity[idx_gaussian_k], 0, 1)
+        opacity_k = torch.clip(self._opacity[idx_gaussian_k], 0, 1)
         weights_k = torch.exp(-distance2_kx1x1.reshape(-1,))
 
         values_bx3 = accumulate_along_rays(weights=weights_k * opacity_k, 

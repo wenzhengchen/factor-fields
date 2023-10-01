@@ -60,7 +60,7 @@ cfg = OmegaConf.merge(base_conf, second_conf)
 
 device = torch.device('cuda')
 
-HW = [100, 100]
+HW = [200, 200]
 
 dataset = dataset_dict[cfg.dataset.dataset_name]
 tolinear = False if cfg.dataset.datadir.endswith('exr') else True
@@ -79,15 +79,15 @@ H,W = train_dataset.HW
 cfg.dataset.aabb = train_dataset.scene_bbox
 
 # %%
-from models.gausssian2d_2 import SplatGaussian2D
+from models.gausssian2d_4_prune_clone import SplatGaussian2D
 import cv2
 h, w = HW
-model = SplatGaussian2D(n_gaussain_num=3000, n_gaussian_max_pixels=min(h, w)//3, n_gaussian_min_pixels=0.5, h=h, w=w)
+model = SplatGaussian2D(n_gaussain_num=10000, n_gaussian_max_pixels=30, n_gaussian_min_pixels=0.5, h=h, w=w)
 model.to(device)
 print(model)
 print('total parameters: ',model.n_parameters())
 
-grad_vars = model.get_optparam_groups(lr_small=0.001)
+grad_vars = model.training_setup(lr=0.001)
 grad_vars
 optimizer = torch.optim.Adam(grad_vars, betas=(0.9, 0.99))#
 
@@ -99,7 +99,7 @@ pbar = tqdm(range(n_iter))
 start = time.time()
 
 iter_show = 500
-iter_gaussian_remove = 500
+iter_gaussian_remove = 1000
 for (iteration, sample) in zip(pbar,train_loader):
     loss_scale *= lr_factor
 
@@ -110,8 +110,11 @@ for (iteration, sample) in zip(pbar,train_loader):
     y_recon = model(coordiantes_device)
     
     loss = torch.mean((y_recon-pixel_rgb.to(device))**2) 
-
+    
     if iteration % iter_gaussian_remove == 0:
+        optimizer = model.prune_points(optimizer)
+
+    if iteration % iter_show == 0:
         model.reset()
 
     if iteration % iter_show == 0:
